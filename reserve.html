@@ -1,0 +1,1157 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>清翔会 予約管理</title>
+<!--
+=== Supabase テーブル作成SQL ===
+以下をSupabaseのSQL Editorで実行してください：
+
+CREATE TABLE IF NOT EXISTS reserve_areas (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  name TEXT NOT NULL,
+  sort_order INT DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS reserve_clinics (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  code TEXT UNIQUE NOT NULL,
+  name TEXT NOT NULL,
+  short_name TEXT,
+  area_id UUID REFERENCES reserve_areas(id),
+  color TEXT DEFAULT '#2d6a9f',
+  sort_order INT DEFAULT 0,
+  active BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS reserve_treatments (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  name TEXT NOT NULL,
+  category TEXT,
+  sort_order INT DEFAULT 0,
+  active BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS reserve_sources (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  name TEXT NOT NULL,
+  code TEXT UNIQUE,
+  active BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS reservations (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  patient_name TEXT NOT NULL,
+  patient_phone TEXT,
+  patient_email TEXT,
+  clinic_id UUID REFERENCES reserve_clinics(id),
+  treatment_id UUID REFERENCES reserve_treatments(id),
+  source_id UUID REFERENCES reserve_sources(id),
+  date DATE NOT NULL,
+  time TIME NOT NULL,
+  status TEXT DEFAULT 'reserved' CHECK (status IN ('reserved','visited','cancelled')),
+  notes TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- RLS無効化（開発用）
+ALTER TABLE reserve_areas ENABLE ROW LEVEL SECURITY;
+ALTER TABLE reserve_clinics ENABLE ROW LEVEL SECURITY;
+ALTER TABLE reserve_treatments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE reserve_sources ENABLE ROW LEVEL SECURITY;
+ALTER TABLE reservations ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "allow_all" ON reserve_areas FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "allow_all" ON reserve_clinics FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "allow_all" ON reserve_treatments FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "allow_all" ON reserve_sources FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "allow_all" ON reservations FOR ALL USING (true) WITH CHECK (true);
+
+-- 初期データ
+INSERT INTO reserve_areas (name, sort_order) VALUES
+  ('名古屋', 1), ('愛知', 2), ('東京', 3), ('京都', 4);
+
+INSERT INTO reserve_treatments (name, category, sort_order) VALUES
+  ('【ブラックフィルム】削らないラミネートベニア無料相談', 'ラミネート', 1),
+  ('矯正無料相談', '矯正', 2),
+  ('削らないラミネートベニア無料相談', 'ラミネート', 3),
+  ('ホワイトニング相談', 'ホワイトニング', 4),
+  ('インプラント相談', 'インプラント', 5);
+
+INSERT INTO reserve_sources (name, code) VALUES
+  ('ヒカルYOUTUBE', 'hikaru_yt'),
+  ('Third_tokyonagoya', 'third_tokyo'),
+  ('Thirdafi_tokyonagoya', 'thirdafi'),
+  ('Instagram広告', 'ig_ad'),
+  ('Google検索', 'google');
+-->
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+:root{--primary:#2563eb;--primary-light:#eff6ff;--primary-dark:#1d4ed8;--bg:#f8fafc;--card:#fff;--ink:#0f172a;--ink2:#475569;--ink3:#94a3b8;--border:#e2e8f0;--success:#10b981;--warning:#f59e0b;--danger:#ef4444;--radius:12px;--shadow:0 1px 3px rgba(0,0,0,.08),0 1px 2px rgba(0,0,0,.06);}
+body{font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans','Noto Sans JP',sans-serif;background:var(--bg);color:var(--ink);font-size:14px;overflow-x:hidden;}
+button{cursor:pointer;font-family:inherit;}
+input,select,textarea{font-family:inherit;font-size:14px;}
+
+/* LAYOUT */
+.layout{display:flex;min-height:100vh;}
+.sidebar{width:220px;background:#0f172a;color:#fff;padding:20px 0;display:flex;flex-direction:column;position:fixed;top:0;left:0;bottom:0;z-index:100;transition:transform .3s;}
+.sidebar-logo{padding:0 20px 24px;font-size:18px;font-weight:800;letter-spacing:.02em;border-bottom:1px solid #1e293b;}
+.sidebar-logo span{color:var(--primary);font-size:12px;display:block;font-weight:500;margin-top:2px;}
+.sidebar-nav{flex:1;padding:16px 0;}
+.nav-item{display:flex;align-items:center;gap:12px;padding:11px 20px;color:#94a3b8;font-size:13px;font-weight:500;cursor:pointer;transition:.15s;border-left:3px solid transparent;}
+.nav-item:hover{background:#1e293b;color:#e2e8f0;}
+.nav-item.active{background:#1e293b;color:#fff;border-left-color:var(--primary);}
+.nav-item svg{width:18px;height:18px;flex-shrink:0;}
+.main{margin-left:220px;flex:1;min-width:0;}
+.topbar{background:var(--card);border-bottom:1px solid var(--border);padding:16px 32px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50;}
+.topbar-title{font-size:20px;font-weight:700;}
+.topbar-actions{display:flex;gap:8px;align-items:center;}
+.content{padding:24px 32px;}
+
+/* BUTTONS */
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:8px;font-size:13px;font-weight:600;border:none;transition:.15s;}
+.btn-primary{background:var(--primary);color:#fff;}.btn-primary:hover{background:var(--primary-dark);}
+.btn-outline{background:transparent;border:1px solid var(--border);color:var(--ink2);}.btn-outline:hover{background:#f1f5f9;}
+.btn-danger{background:var(--danger);color:#fff;}.btn-danger:hover{background:#dc2626;}
+.btn-success{background:var(--success);color:#fff;}
+.btn-sm{padding:5px 10px;font-size:12px;}
+
+/* CARDS */
+.card{background:var(--card);border-radius:var(--radius);border:1px solid var(--border);box-shadow:var(--shadow);}
+.card-header{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;}
+.card-header h3{font-size:15px;font-weight:700;}
+.card-body{padding:20px;}
+
+/* STAT CARDS */
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:24px;}
+.stat-card{background:var(--card);border-radius:var(--radius);border:1px solid var(--border);padding:20px;box-shadow:var(--shadow);}
+.stat-card .label{font-size:12px;color:var(--ink3);font-weight:500;display:flex;align-items:center;gap:6px;margin-bottom:8px;}
+.stat-card .value{font-size:32px;font-weight:800;color:var(--ink);}
+.stat-card .sub{font-size:12px;color:var(--success);font-weight:600;margin-top:4px;}
+.stat-card .sub.danger{color:var(--danger);}
+
+/* DASHBOARD GRID */
+.dash-grid{display:grid;grid-template-columns:1fr 340px;gap:24px;}
+.dash-grid .full{grid-column:1/-1;}
+
+/* TAGS */
+.tag-row{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px;}
+.tag{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:600;background:#f1f5f9;color:var(--ink2);}
+.tag svg{width:12px;height:12px;}
+
+/* TABLE */
+.tbl-wrap{overflow-x:auto;}
+table.tbl{width:100%;border-collapse:collapse;}
+.tbl th{text-align:left;padding:10px 14px;font-size:12px;font-weight:600;color:var(--ink3);border-bottom:2px solid var(--border);white-space:nowrap;}
+.tbl td{padding:10px 14px;border-bottom:1px solid var(--border);font-size:13px;vertical-align:middle;}
+.tbl tr:hover{background:#f8fafc;}
+.tbl .num{text-align:right;font-variant-numeric:tabular-nums;}
+
+/* STATUS BADGES */
+.badge{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;}
+.badge-reserved{background:#dbeafe;color:#1d4ed8;}
+.badge-visited{background:#d1fae5;color:#047857;}
+.badge-cancelled{background:#fee2e2;color:#b91c1c;}
+
+/* RESERVATION LIST */
+.res-item{display:flex;align-items:center;padding:14px 0;border-bottom:1px solid var(--border);gap:12px;}
+.res-item:last-child{border-bottom:none;}
+.res-num{width:28px;height:28px;border-radius:50%;background:#f1f5f9;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:var(--ink3);flex-shrink:0;}
+.res-info{flex:1;min-width:0;}
+.res-name{font-size:14px;font-weight:600;}
+.res-meta{font-size:11px;color:var(--ink3);margin-top:2px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.res-date{text-align:right;flex-shrink:0;}
+.res-date .d{font-size:14px;font-weight:600;}
+.res-date .t{font-size:11px;color:var(--ink3);}
+.res-date .ago{font-size:10px;color:var(--ink3);}
+
+/* TRAFFIC PANEL */
+.traffic-panel{background:var(--card);border-radius:var(--radius);border:1px solid var(--border);box-shadow:var(--shadow);}
+.traffic-header{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;}
+.traffic-header h3{font-size:15px;font-weight:700;display:flex;align-items:center;gap:8px;}
+.measure-bar{margin:16px 20px;padding:12px 16px;background:#f8fafc;border-radius:8px;}
+.measure-label{font-size:12px;color:var(--ink3);display:flex;align-items:center;gap:6px;}
+.measure-val{font-size:28px;font-weight:800;color:var(--success);}
+.measure-track{height:6px;background:#e2e8f0;border-radius:3px;margin-top:8px;overflow:hidden;}
+.measure-fill{height:100%;background:var(--danger);border-radius:3px;transition:width .5s;}
+.measure-sub{display:flex;justify-content:space-between;font-size:11px;color:var(--ink3);margin-top:4px;}
+.source-list{padding:8px 20px 16px;}
+.source-item{display:flex;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);}
+.source-item:last-child{border-bottom:none;}
+.source-rank{width:24px;font-size:13px;font-weight:700;color:var(--ink3);}
+.source-name{flex:1;font-size:13px;font-weight:500;}
+.source-count{font-size:18px;font-weight:800;text-align:right;}
+.source-pct{font-size:11px;color:var(--ink3);text-align:right;margin-left:8px;min-width:36px;}
+
+/* MODAL */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:1000;display:none;align-items:center;justify-content:center;padding:20px;}
+.modal-overlay.show{display:flex;}
+.modal{background:var(--card);border-radius:var(--radius);width:100%;max-width:560px;max-height:90vh;overflow-y:auto;box-shadow:0 25px 50px rgba(0,0,0,.2);}
+.modal-header{padding:20px 24px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;}
+.modal-header h3{font-size:16px;font-weight:700;}
+.modal-close{background:none;border:none;font-size:20px;color:var(--ink3);padding:4px;}
+.modal-body{padding:24px;}
+.modal-footer{padding:16px 24px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px;}
+
+/* FORM */
+.form-group{margin-bottom:16px;}
+.form-group label{display:block;font-size:12px;font-weight:600;color:var(--ink2);margin-bottom:4px;}
+.form-group input,.form-group select,.form-group textarea{width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--ink);transition:.15s;}
+.form-group input:focus,.form-group select:focus,.form-group textarea:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px rgba(37,99,235,.1);}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+
+/* SEARCH BAR */
+.search-bar{display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap;}
+.search-bar input,.search-bar select{padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;background:var(--card);}
+.search-bar input{min-width:200px;flex:1;}
+.search-bar select{min-width:140px;}
+
+/* CLINIC CARDS */
+.clinic-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px;}
+.clinic-card{background:var(--card);border-radius:var(--radius);border:1px solid var(--border);padding:16px;box-shadow:var(--shadow);display:flex;gap:12px;align-items:flex-start;}
+.clinic-dot{width:10px;height:10px;border-radius:50%;margin-top:4px;flex-shrink:0;}
+.clinic-card h4{font-size:14px;font-weight:700;margin-bottom:4px;}
+.clinic-card .area{font-size:11px;color:var(--ink3);}
+.clinic-card .actions{margin-top:8px;display:flex;gap:6px;}
+
+/* EMAIL PAGE */
+.email-list .email-item{display:flex;align-items:center;padding:12px 0;border-bottom:1px solid var(--border);gap:12px;}
+.email-item .name{font-weight:600;min-width:100px;}
+.email-item .addr{color:var(--primary);flex:1;}
+.email-item .clinic{font-size:12px;color:var(--ink3);}
+.copy-btn{padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--card);font-size:11px;color:var(--ink2);transition:.15s;}
+.copy-btn:hover{background:#f1f5f9;}
+.copy-btn.copied{background:var(--success);color:#fff;border-color:var(--success);}
+
+/* RESPONSIVE */
+@media(max-width:900px){
+  .sidebar{transform:translateX(-100%);}
+  .sidebar.open{transform:translateX(0);}
+  .main{margin-left:0;}
+  .dash-grid{grid-template-columns:1fr;}
+  .content{padding:16px;}
+  .topbar{padding:12px 16px;}
+  .hamburger{display:flex!important;}
+}
+.hamburger{display:none;align-items:center;justify-content:center;width:36px;height:36px;background:none;border:1px solid var(--border);border-radius:8px;font-size:18px;}
+
+/* TABS */
+.page-tabs{display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px;}
+.page-tab{padding:10px 20px;font-size:13px;font-weight:600;color:var(--ink3);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px;transition:.15s;}
+.page-tab:hover{color:var(--ink);}
+.page-tab.active{color:var(--primary);border-bottom-color:var(--primary);}
+
+/* TREATMENT CATEGORY */
+.treat-section{margin-bottom:24px;}
+.treat-section h4{font-size:13px;font-weight:700;color:var(--ink2);margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid var(--border);}
+.treat-item{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid #f1f5f9;}
+
+/* EMPTY STATE */
+.empty{text-align:center;padding:40px;color:var(--ink3);}
+.empty svg{width:48px;height:48px;margin-bottom:12px;opacity:.4;}
+.empty p{font-size:14px;}
+
+/* PAGE */
+.page{display:none;}
+.page.active{display:block;}
+</style>
+</head>
+<body>
+<div class="layout">
+<!-- SIDEBAR -->
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-logo">清翔会<span>予約管理システム</span></div>
+  <nav class="sidebar-nav">
+    <div class="nav-item active" data-page="dashboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>ホーム</div>
+    <div class="nav-item" data-page="reservations"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>予約</div>
+    <div class="nav-item" data-page="clinics"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18"/><path d="M5 21V7l8-4v18"/><path d="M19 21V11l-6-4"/><path d="M9 9h1"/><path d="M9 13h1"/><path d="M9 17h1"/></svg>クリニック</div>
+    <div class="nav-item" data-page="treatments"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/><path d="M12 8v8"/><path d="M8 12h8"/></svg>治療</div>
+    <div class="nav-item" data-page="shift"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="18" rx="2"/><path d="M8 7v10"/><path d="M16 7v10"/><path d="M2 11h20"/></svg>シフト</div>
+    <div class="nav-item" data-page="email"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><polyline points="22 4 12 13 2 4"/></svg>メール</div>
+    <div class="nav-item" data-page="sources"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>流入経路</div>
+    <div class="nav-item" data-page="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>設定</div>
+  </nav>
+  <div style="padding:12px 20px;border-top:1px solid #1e293b;">
+    <div class="nav-item" onclick="logout()" style="padding:8px 0;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>ログアウト</div>
+  </div>
+</aside>
+
+<!-- MAIN -->
+<div class="main">
+<div class="topbar">
+  <div style="display:flex;align-items:center;gap:12px;">
+    <button class="hamburger" onclick="document.getElementById('sidebar').classList.toggle('open')">☰</button>
+    <div class="topbar-title" id="pageTitle">ホーム</div>
+  </div>
+  <div class="topbar-actions" id="topActions"></div>
+</div>
+
+<div class="content">
+
+<!-- ===== PAGE: DASHBOARD ===== -->
+<div class="page active" id="pg-dashboard">
+  <div class="stats-grid" id="statsGrid"></div>
+  <div class="tag-row" id="tagRow"></div>
+  <div class="dash-grid">
+    <div class="card">
+      <div class="card-header"><h3>最近の予約</h3><a href="#" onclick="goPage('reservations');return false" style="font-size:12px;color:var(--primary);font-weight:600;">すべて表示 →</a></div>
+      <div class="card-body" id="recentList" style="padding:12px 20px;"></div>
+    </div>
+    <div class="traffic-panel">
+      <div class="traffic-header"><h3><svg viewBox="0 0 24 24" fill="none" stroke="var(--danger)" stroke-width="2" width="18" height="18"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>流入経路</h3><a href="#" onclick="goPage('sources');return false" style="font-size:12px;color:var(--primary);font-weight:600;">管理 →</a></div>
+      <div class="measure-bar">
+        <div class="measure-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>計測率</div>
+        <div style="display:flex;align-items:baseline;gap:8px;"><span class="measure-val" id="measurePct">--%</span></div>
+        <div class="measure-track"><div class="measure-fill" id="measureFill" style="width:0%"></div></div>
+        <div class="measure-sub"><span id="measureSub1">--</span><span id="measureSub2">--</span></div>
+      </div>
+      <div style="padding:8px 20px;font-size:12px;color:var(--ink3);display:flex;align-items:center;gap:6px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/></svg>トップ流入元</div>
+      <div class="source-list" id="topSources"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== PAGE: RESERVATIONS ===== -->
+<div class="page" id="pg-reservations">
+  <div class="search-bar">
+    <input type="text" id="resSearch" placeholder="患者名で検索..." oninput="renderReservations()">
+    <select id="resFilterClinic" onchange="renderReservations()"><option value="">全クリニック</option></select>
+    <select id="resFilterStatus" onchange="renderReservations()">
+      <option value="">全ステータス</option>
+      <option value="reserved">予約済み</option>
+      <option value="visited">来院済み</option>
+      <option value="cancelled">キャンセル</option>
+    </select>
+    <input type="date" id="resFilterDate" onchange="renderReservations()">
+  </div>
+  <div class="card">
+    <div class="tbl-wrap">
+      <table class="tbl">
+        <thead><tr><th>#</th><th>患者名</th><th>クリニック</th><th>施術</th><th>日時</th><th>流入経路</th><th>ステータス</th><th>操作</th></tr></thead>
+        <tbody id="resBody"></tbody>
+      </table>
+    </div>
+    <div class="empty" id="resEmpty" style="display:none;"><p>予約がありません</p></div>
+  </div>
+</div>
+
+<!-- ===== PAGE: CLINICS ===== -->
+<div class="page" id="pg-clinics">
+  <div id="clinicList"></div>
+</div>
+
+<!-- ===== PAGE: TREATMENTS ===== -->
+<div class="page" id="pg-treatments">
+  <div id="treatList"></div>
+</div>
+
+<!-- ===== PAGE: SHIFT ===== -->
+<div class="page" id="pg-shift">
+  <div class="card"><div class="card-body" style="text-align:center;padding:60px 20px;">
+    <svg viewBox="0 0 24 24" fill="none" stroke="var(--ink3)" stroke-width="2" width="48" height="48" style="margin-bottom:16px;"><rect x="2" y="3" width="20" height="18" rx="2"/><path d="M8 7v10"/><path d="M16 7v10"/><path d="M2 11h20"/></svg>
+    <p style="font-size:16px;font-weight:600;margin-bottom:8px;">シフト管理</p>
+    <p style="color:var(--ink3);margin-bottom:16px;">既存のシフト管理システムを開きます</p>
+    <a href="index.html" class="btn btn-primary" target="_blank">シフト管理を開く →</a>
+  </div></div>
+</div>
+
+<!-- ===== PAGE: EMAIL ===== -->
+<div class="page" id="pg-email">
+  <div class="search-bar">
+    <input type="text" id="emailSearch" placeholder="名前・メールで検索..." oninput="renderEmails()">
+    <select id="emailFilterClinic" onchange="renderEmails()"><option value="">全クリニック</option></select>
+    <button class="btn btn-outline" onclick="copyAllEmails()">全メールアドレスをコピー</button>
+  </div>
+  <div class="card">
+    <div class="email-list" id="emailList" style="padding:12px 20px;"></div>
+    <div class="empty" id="emailEmpty" style="display:none;"><p>メールアドレスのある予約がありません</p></div>
+  </div>
+</div>
+
+<!-- ===== PAGE: SOURCES ===== -->
+<div class="page" id="pg-sources">
+  <div class="card" style="margin-bottom:24px;">
+    <div class="card-header"><h3>流入経路一覧</h3></div>
+    <div class="tbl-wrap">
+      <table class="tbl">
+        <thead><tr><th>#</th><th>流入経路名</th><th>コード</th><th>予約数</th><th>割合</th><th>操作</th></tr></thead>
+        <tbody id="sourceBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ===== PAGE: SETTINGS ===== -->
+<div class="page" id="pg-settings">
+  <div class="card" style="margin-bottom:24px;">
+    <div class="card-header"><h3>エリア管理</h3><button class="btn btn-sm btn-primary" onclick="showAreaModal()">+ 追加</button></div>
+    <div class="tbl-wrap">
+      <table class="tbl">
+        <thead><tr><th>エリア名</th><th>院数</th><th>操作</th></tr></thead>
+        <tbody id="areaBody"></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header"><h3>データ管理</h3></div>
+    <div class="card-body">
+      <p style="color:var(--ink3);margin-bottom:12px;font-size:13px;">サンプルデータの追加・データのエクスポートができます</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn btn-outline" onclick="loadSampleData()">サンプルデータ追加</button>
+        <button class="btn btn-outline" onclick="exportCSV()">CSV エクスポート</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div><!-- /content -->
+</div><!-- /main -->
+</div><!-- /layout -->
+
+<!-- MODAL: RESERVATION -->
+<div class="modal-overlay" id="resModal">
+  <div class="modal">
+    <div class="modal-header"><h3 id="resModalTitle">予約追加</h3><button class="modal-close" onclick="closeModal('resModal')">×</button></div>
+    <div class="modal-body">
+      <div class="form-group"><label>患者名 *</label><input id="fResName" placeholder="山田 太郎"></div>
+      <div class="form-row">
+        <div class="form-group"><label>電話番号</label><input id="fResPhone" placeholder="090-1234-5678"></div>
+        <div class="form-group"><label>メールアドレス</label><input id="fResEmail" type="email" placeholder="example@mail.com"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>クリニック *</label><select id="fResClinic"></select></div>
+        <div class="form-group"><label>施術 *</label><select id="fResTreat"></select></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>日付 *</label><input id="fResDate" type="date"></div>
+        <div class="form-group"><label>時間 *</label><input id="fResTime" type="time"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>流入経路</label><select id="fResSource"><option value="">-- 選択 --</option></select></div>
+        <div class="form-group"><label>ステータス</label><select id="fResStatus">
+          <option value="reserved">予約済み</option><option value="visited">来院済み</option><option value="cancelled">キャンセル</option>
+        </select></div>
+      </div>
+      <div class="form-group"><label>備考</label><textarea id="fResNotes" rows="2"></textarea></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal('resModal')">キャンセル</button>
+      <button class="btn btn-primary" id="resModalSave" onclick="saveReservation()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL: CLINIC -->
+<div class="modal-overlay" id="clinicModal">
+  <div class="modal">
+    <div class="modal-header"><h3 id="clinicModalTitle">クリニック追加</h3><button class="modal-close" onclick="closeModal('clinicModal')">×</button></div>
+    <div class="modal-body">
+      <div class="form-group"><label>クリニック名 *</label><input id="fClinicName" placeholder="名古屋ルミナス歯科・矯正歯科"></div>
+      <div class="form-row">
+        <div class="form-group"><label>略称</label><input id="fClinicShort" placeholder="ルミナス"></div>
+        <div class="form-group"><label>コード *</label><input id="fClinicCode" placeholder="luminas"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>エリア *</label><select id="fClinicArea"></select></div>
+        <div class="form-group"><label>カラー</label><input id="fClinicColor" type="color" value="#2563eb"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal('clinicModal')">キャンセル</button>
+      <button class="btn btn-primary" onclick="saveClinic()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL: TREATMENT -->
+<div class="modal-overlay" id="treatModal">
+  <div class="modal">
+    <div class="modal-header"><h3 id="treatModalTitle">施術追加</h3><button class="modal-close" onclick="closeModal('treatModal')">×</button></div>
+    <div class="modal-body">
+      <div class="form-group"><label>施術名 *</label><input id="fTreatName" placeholder="矯正無料相談"></div>
+      <div class="form-group"><label>カテゴリ</label><input id="fTreatCat" placeholder="矯正"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal('treatModal')">キャンセル</button>
+      <button class="btn btn-primary" onclick="saveTreatment()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL: SOURCE -->
+<div class="modal-overlay" id="sourceModal">
+  <div class="modal">
+    <div class="modal-header"><h3 id="sourceModalTitle">流入経路追加</h3><button class="modal-close" onclick="closeModal('sourceModal')">×</button></div>
+    <div class="modal-body">
+      <div class="form-group"><label>流入経路名 *</label><input id="fSourceName" placeholder="ヒカルYOUTUBE"></div>
+      <div class="form-group"><label>コード</label><input id="fSourceCode" placeholder="hikaru_yt"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal('sourceModal')">キャンセル</button>
+      <button class="btn btn-primary" onclick="saveSource()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL: AREA -->
+<div class="modal-overlay" id="areaModal">
+  <div class="modal">
+    <div class="modal-header"><h3>エリア追加</h3><button class="modal-close" onclick="closeModal('areaModal')">×</button></div>
+    <div class="modal-body">
+      <div class="form-group"><label>エリア名 *</label><input id="fAreaName" placeholder="名古屋"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal('areaModal')">キャンセル</button>
+      <button class="btn btn-primary" onclick="saveArea()">保存</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ============ SUPABASE CONFIG ============
+const SB_URL = 'https://trsugjpvhlkwjvtloype.supabase.co';
+const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRyc3VnanB2aGxrd2p2dGxveXBlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4NTc4ODQsImV4cCI6MjA5MDQzMzg4NH0.GASbFeN_dLduCw81DQen8e4Hwc0TkHrcZWbB8dgNsec';
+const SB_H = {apikey:SB_KEY, Authorization:'Bearer '+SB_KEY, 'Content-Type':'application/json', Prefer:'return=representation'};
+let USE_SB = false;
+
+// ============ DATA STORE ============
+const STORE_KEY = 'reserve_data';
+let DATA = { areas:[], clinics:[], treatments:[], sources:[], reservations:[] };
+
+function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
+function today(){ return new Date().toISOString().slice(0,10); }
+function thisWeekRange(){ const d=new Date(), day=d.getDay()||7; const mon=new Date(d); mon.setDate(d.getDate()-(day-1)); const sun=new Date(mon); sun.setDate(mon.getDate()+6); return [mon.toISOString().slice(0,10), sun.toISOString().slice(0,10)]; }
+
+// ============ PERSISTENCE ============
+function saveLocal(){ localStorage.setItem(STORE_KEY, JSON.stringify(DATA)); }
+function loadLocal(){
+  const s = localStorage.getItem(STORE_KEY);
+  if(s){ DATA = JSON.parse(s); return true; }
+  return false;
+}
+
+async function sbFetch(table, params=''){
+  try {
+    const r = await fetch(`${SB_URL}/rest/v1/${table}${params}`, {headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY}});
+    if(!r.ok) throw new Error(r.status);
+    return await r.json();
+  } catch(e){ return null; }
+}
+async function sbUpsert(table, row){
+  try {
+    const r = await fetch(`${SB_URL}/rest/v1/${table}`, {method:'POST', headers:{...SB_H, Prefer:'return=representation,resolution=merge-duplicates'}, body:JSON.stringify(row)});
+    if(!r.ok) throw new Error(r.status);
+    return await r.json();
+  } catch(e){ return null; }
+}
+async function sbDelete(table, id){
+  try {
+    await fetch(`${SB_URL}/rest/v1/${table}?id=eq.${id}`, {method:'DELETE', headers:SB_H});
+  } catch(e){}
+}
+
+async function initData(){
+  const areas = await sbFetch('reserve_areas','?order=sort_order');
+  if(areas && areas.length > 0){
+    USE_SB = true;
+    DATA.areas = areas;
+    DATA.clinics = await sbFetch('reserve_clinics','?order=sort_order') || [];
+    DATA.treatments = await sbFetch('reserve_treatments','?order=sort_order') || [];
+    DATA.sources = await sbFetch('reserve_sources','?order=name') || [];
+    DATA.reservations = await sbFetch('reservations','?order=created_at.desc&limit=500') || [];
+    saveLocal();
+  } else {
+    if(!loadLocal()){
+      DATA.areas = [
+        {id:uid(),name:'名古屋',sort_order:1},{id:uid(),name:'愛知',sort_order:2},
+        {id:uid(),name:'東京',sort_order:3},{id:uid(),name:'京都',sort_order:4}
+      ];
+      const areaMap = {};
+      DATA.areas.forEach(a => areaMap[a.name] = a.id);
+      DATA.clinics = [
+        {id:uid(),code:'esca',name:'名古屋エスカ歯科・矯正歯科',short_name:'エスカ',area_id:areaMap['名古屋'],color:'#c0392b',sort_order:1,active:true},
+        {id:uid(),code:'r',name:'名古屋アール歯科・矯正歯科',short_name:'アール',area_id:areaMap['名古屋'],color:'#7030a0',sort_order:2,active:true},
+        {id:uid(),code:'wiz',name:'名古屋ウィズ歯科・矯正歯科',short_name:'ウィズ',area_id:areaMap['名古屋'],color:'#1e8449',sort_order:3,active:true},
+        {id:uid(),code:'luminas',name:'名古屋ルミナス歯科・矯正歯科',short_name:'ルミナス',area_id:areaMap['名古屋'],color:'#27ae60',sort_order:4,active:true},
+        {id:uid(),code:'chaya',name:'茶屋歯科・矯正歯科',short_name:'茶屋',area_id:areaMap['名古屋'],color:'#d4a017',sort_order:5,active:true},
+        {id:uid(),code:'asano',name:'アサノ歯科',short_name:'アサノ',area_id:areaMap['愛知'],color:'#85200c',sort_order:6,active:true},
+        {id:uid(),code:'chiryu',name:'知立歯科・矯正歯科',short_name:'知立',area_id:areaMap['愛知'],color:'#0a6b8a',sort_order:7,active:true},
+        {id:uid(),code:'komaki',name:'小牧歯科・矯正歯科',short_name:'小牧',area_id:areaMap['愛知'],color:'#d81b60',sort_order:8,active:true},
+        {id:uid(),code:'yagoto',name:'八事歯科・矯正歯科',short_name:'八事',area_id:areaMap['名古屋'],color:'#8b4513',sort_order:9,active:true},
+        {id:uid(),code:'omori',name:'大森歯科・矯正歯科',short_name:'大森',area_id:areaMap['名古屋'],color:'#1f6b4e',sort_order:10,active:true},
+        {id:uid(),code:'kyoto',name:'京都歯科・矯正歯科',short_name:'京都',area_id:areaMap['京都'],color:'#6b3a87',sort_order:11,active:true},
+        {id:uid(),code:'ginza',name:'BF銀座歯科・矯正歯科',short_name:'銀座',area_id:areaMap['東京'],color:'#7d6608',sort_order:12,active:true},
+        {id:uid(),code:'houmon',name:'訪問歯科',short_name:'訪問',area_id:areaMap['名古屋'],color:'#2c6e8a',sort_order:13,active:true},
+      ];
+      DATA.treatments = [
+        {id:uid(),name:'【ブラックフィルム】削らないラミネートベニア無料相談',category:'ラミネート',sort_order:1,active:true},
+        {id:uid(),name:'矯正無料相談',category:'矯正',sort_order:2,active:true},
+        {id:uid(),name:'削らないラミネートベニア無料相談',category:'ラミネート',sort_order:3,active:true},
+        {id:uid(),name:'ホワイトニング相談',category:'ホワイトニング',sort_order:4,active:true},
+        {id:uid(),name:'インプラント相談',category:'インプラント',sort_order:5,active:true},
+      ];
+      DATA.sources = [
+        {id:uid(),name:'ヒカルYOUTUBE',code:'hikaru_yt',active:true},
+        {id:uid(),name:'Third_tokyonagoya',code:'third_tokyo',active:true},
+        {id:uid(),name:'Thirdafi_tokyonagoya',code:'thirdafi',active:true},
+        {id:uid(),name:'Instagram広告',code:'ig_ad',active:true},
+        {id:uid(),name:'Google検索',code:'google',active:true},
+      ];
+      DATA.reservations = [];
+      saveLocal();
+    }
+  }
+  renderAll();
+}
+
+// ============ NAVIGATION ============
+let currentPage = 'dashboard';
+const PAGE_TITLES = {dashboard:'ホーム',reservations:'予約',clinics:'クリニック',treatments:'治療',shift:'シフト',email:'メール',sources:'流入経路',settings:'設定'};
+
+function goPage(page){
+  currentPage = page;
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.getElementById('pg-'+page).classList.add('active');
+  document.querySelectorAll('.nav-item[data-page]').forEach(n=>{n.classList.toggle('active',n.dataset.page===page);});
+  document.getElementById('pageTitle').textContent = PAGE_TITLES[page]||page;
+  const acts = document.getElementById('topActions');
+  acts.innerHTML = '';
+  if(page==='reservations') acts.innerHTML='<button class="btn btn-primary" onclick="showResModal()">+ 予約追加</button>';
+  if(page==='clinics') acts.innerHTML='<button class="btn btn-primary" onclick="showClinicModal()">+ クリニック追加</button>';
+  if(page==='treatments') acts.innerHTML='<button class="btn btn-primary" onclick="showTreatModal()">+ 施術追加</button>';
+  if(page==='sources') acts.innerHTML='<button class="btn btn-primary" onclick="showSourceModal()">+ 流入経路追加</button>';
+  if(page==='dashboard') renderDashboard();
+  if(page==='reservations') renderReservations();
+  if(page==='clinics') renderClinics();
+  if(page==='treatments') renderTreatments();
+  if(page==='email') renderEmails();
+  if(page==='sources') renderSources();
+  if(page==='settings') renderSettings();
+  document.getElementById('sidebar').classList.remove('open');
+}
+
+document.querySelectorAll('.nav-item[data-page]').forEach(n=>{
+  n.addEventListener('click', ()=> goPage(n.dataset.page));
+});
+
+// ============ MODAL ============
+function showModal(id){ document.getElementById(id).classList.add('show'); }
+function closeModal(id){ document.getElementById(id).classList.remove('show'); }
+
+let editResId = null;
+function showResModal(id){
+  editResId = id||null;
+  document.getElementById('resModalTitle').textContent = id ? '予約編集' : '予約追加';
+  const sel = document.getElementById('fResClinic');
+  sel.innerHTML = '<option value="">-- 選択 --</option>' + DATA.clinics.map(c=>`<option value="${c.id}">${c.short_name||c.name}</option>`).join('');
+  const tsel = document.getElementById('fResTreat');
+  tsel.innerHTML = '<option value="">-- 選択 --</option>' + DATA.treatments.map(t=>`<option value="${t.id}">${t.name}</option>`).join('');
+  const ssel = document.getElementById('fResSource');
+  ssel.innerHTML = '<option value="">-- 選択 --</option>' + DATA.sources.map(s=>`<option value="${s.id}">${s.name}</option>`).join('');
+  if(id){
+    const r = DATA.reservations.find(x=>x.id===id);
+    if(r){
+      document.getElementById('fResName').value = r.patient_name||'';
+      document.getElementById('fResPhone').value = r.patient_phone||'';
+      document.getElementById('fResEmail').value = r.patient_email||'';
+      sel.value = r.clinic_id||'';
+      tsel.value = r.treatment_id||'';
+      document.getElementById('fResDate').value = r.date||'';
+      document.getElementById('fResTime').value = r.time||'';
+      ssel.value = r.source_id||'';
+      document.getElementById('fResStatus').value = r.status||'reserved';
+      document.getElementById('fResNotes').value = r.notes||'';
+    }
+  } else {
+    ['fResName','fResPhone','fResEmail','fResDate','fResTime','fResNotes'].forEach(x=>document.getElementById(x).value='');
+    document.getElementById('fResStatus').value='reserved';
+  }
+  showModal('resModal');
+}
+
+function saveReservation(){
+  const name = document.getElementById('fResName').value.trim();
+  const date = document.getElementById('fResDate').value;
+  const time = document.getElementById('fResTime').value;
+  const clinic = document.getElementById('fResClinic').value;
+  const treat = document.getElementById('fResTreat').value;
+  if(!name||!date||!time||!clinic||!treat){ alert('必須項目を入力してください'); return; }
+  const row = {
+    patient_name: name,
+    patient_phone: document.getElementById('fResPhone').value.trim(),
+    patient_email: document.getElementById('fResEmail').value.trim(),
+    clinic_id: clinic,
+    treatment_id: treat,
+    source_id: document.getElementById('fResSource').value||null,
+    date, time,
+    status: document.getElementById('fResStatus').value,
+    notes: document.getElementById('fResNotes').value.trim(),
+  };
+  if(editResId){
+    const idx = DATA.reservations.findIndex(x=>x.id===editResId);
+    if(idx>=0) Object.assign(DATA.reservations[idx], row);
+    if(USE_SB) sbUpsert('reservations',{id:editResId,...row});
+  } else {
+    row.id = uid();
+    row.created_at = new Date().toISOString();
+    DATA.reservations.unshift(row);
+    if(USE_SB) sbUpsert('reservations', row);
+  }
+  saveLocal();
+  closeModal('resModal');
+  renderReservations();
+  if(currentPage==='dashboard') renderDashboard();
+}
+
+function deleteReservation(id){
+  if(!confirm('この予約を削除しますか？')) return;
+  DATA.reservations = DATA.reservations.filter(x=>x.id!==id);
+  if(USE_SB) sbDelete('reservations',id);
+  saveLocal();
+  renderReservations();
+}
+
+function changeStatus(id, status){
+  const r = DATA.reservations.find(x=>x.id===id);
+  if(r){ r.status = status; saveLocal(); if(USE_SB) sbUpsert('reservations',{id,status}); renderReservations(); }
+}
+
+// ============ CLINIC CRUD ============
+let editClinicId = null;
+function showClinicModal(id){
+  editClinicId = id||null;
+  document.getElementById('clinicModalTitle').textContent = id ? 'クリニック編集' : 'クリニック追加';
+  const asel = document.getElementById('fClinicArea');
+  asel.innerHTML = '<option value="">-- 選択 --</option>' + DATA.areas.map(a=>`<option value="${a.id}">${a.name}</option>`).join('');
+  if(id){
+    const c = DATA.clinics.find(x=>x.id===id);
+    if(c){
+      document.getElementById('fClinicName').value = c.name||'';
+      document.getElementById('fClinicShort').value = c.short_name||'';
+      document.getElementById('fClinicCode').value = c.code||'';
+      asel.value = c.area_id||'';
+      document.getElementById('fClinicColor').value = c.color||'#2563eb';
+    }
+  } else {
+    ['fClinicName','fClinicShort','fClinicCode'].forEach(x=>document.getElementById(x).value='');
+    document.getElementById('fClinicColor').value='#2563eb';
+  }
+  showModal('clinicModal');
+}
+function saveClinic(){
+  const name=document.getElementById('fClinicName').value.trim();
+  const code=document.getElementById('fClinicCode').value.trim();
+  const area=document.getElementById('fClinicArea').value;
+  if(!name||!code||!area){alert('必須項目を入力してください');return;}
+  const row={name,code,short_name:document.getElementById('fClinicShort').value.trim(),area_id:area,color:document.getElementById('fClinicColor').value,active:true};
+  if(editClinicId){
+    const idx=DATA.clinics.findIndex(x=>x.id===editClinicId);
+    if(idx>=0) Object.assign(DATA.clinics[idx],row);
+    if(USE_SB) sbUpsert('reserve_clinics',{id:editClinicId,...row});
+  } else {
+    row.id=uid(); row.sort_order=DATA.clinics.length+1;
+    DATA.clinics.push(row);
+    if(USE_SB) sbUpsert('reserve_clinics',row);
+  }
+  saveLocal(); closeModal('clinicModal'); renderClinics();
+}
+function deleteClinic(id){
+  if(!confirm('このクリニックを削除しますか？'))return;
+  DATA.clinics=DATA.clinics.filter(x=>x.id!==id);
+  if(USE_SB) sbDelete('reserve_clinics',id);
+  saveLocal(); renderClinics();
+}
+
+// ============ TREATMENT CRUD ============
+let editTreatId = null;
+function showTreatModal(id){
+  editTreatId=id||null;
+  document.getElementById('treatModalTitle').textContent=id?'施術編集':'施術追加';
+  if(id){
+    const t=DATA.treatments.find(x=>x.id===id);
+    if(t){document.getElementById('fTreatName').value=t.name||'';document.getElementById('fTreatCat').value=t.category||'';}
+  } else {document.getElementById('fTreatName').value='';document.getElementById('fTreatCat').value='';}
+  showModal('treatModal');
+}
+function saveTreatment(){
+  const name=document.getElementById('fTreatName').value.trim();
+  if(!name){alert('施術名を入力してください');return;}
+  const row={name,category:document.getElementById('fTreatCat').value.trim(),active:true};
+  if(editTreatId){
+    const idx=DATA.treatments.findIndex(x=>x.id===editTreatId);
+    if(idx>=0)Object.assign(DATA.treatments[idx],row);
+    if(USE_SB) sbUpsert('reserve_treatments',{id:editTreatId,...row});
+  } else {
+    row.id=uid();row.sort_order=DATA.treatments.length+1;
+    DATA.treatments.push(row);
+    if(USE_SB) sbUpsert('reserve_treatments',row);
+  }
+  saveLocal();closeModal('treatModal');renderTreatments();
+}
+function deleteTreatment(id){
+  if(!confirm('この施術を削除しますか？'))return;
+  DATA.treatments=DATA.treatments.filter(x=>x.id!==id);
+  if(USE_SB) sbDelete('reserve_treatments',id);
+  saveLocal();renderTreatments();
+}
+
+// ============ SOURCE CRUD ============
+let editSourceId=null;
+function showSourceModal(id){
+  editSourceId=id||null;
+  document.getElementById('sourceModalTitle').textContent=id?'流入経路編集':'流入経路追加';
+  if(id){
+    const s=DATA.sources.find(x=>x.id===id);
+    if(s){document.getElementById('fSourceName').value=s.name||'';document.getElementById('fSourceCode').value=s.code||'';}
+  } else {document.getElementById('fSourceName').value='';document.getElementById('fSourceCode').value='';}
+  showModal('sourceModal');
+}
+function saveSource(){
+  const name=document.getElementById('fSourceName').value.trim();
+  if(!name){alert('流入経路名を入力してください');return;}
+  const row={name,code:document.getElementById('fSourceCode').value.trim(),active:true};
+  if(editSourceId){
+    const idx=DATA.sources.findIndex(x=>x.id===editSourceId);
+    if(idx>=0)Object.assign(DATA.sources[idx],row);
+    if(USE_SB) sbUpsert('reserve_sources',{id:editSourceId,...row});
+  } else {row.id=uid();DATA.sources.push(row);if(USE_SB) sbUpsert('reserve_sources',row);}
+  saveLocal();closeModal('sourceModal');renderSources();
+}
+function deleteSource(id){
+  if(!confirm('この流入経路を削除しますか？'))return;
+  DATA.sources=DATA.sources.filter(x=>x.id!==id);
+  if(USE_SB) sbDelete('reserve_sources',id);
+  saveLocal();renderSources();
+}
+
+// ============ AREA CRUD ============
+function showAreaModal(){
+  document.getElementById('fAreaName').value='';
+  showModal('areaModal');
+}
+function saveArea(){
+  const name=document.getElementById('fAreaName').value.trim();
+  if(!name){alert('エリア名を入力してください');return;}
+  const row={id:uid(),name,sort_order:DATA.areas.length+1};
+  DATA.areas.push(row);
+  if(USE_SB) sbUpsert('reserve_areas',row);
+  saveLocal();closeModal('areaModal');renderSettings();
+}
+function deleteArea(id){
+  if(!confirm('このエリアを削除しますか？'))return;
+  DATA.areas=DATA.areas.filter(x=>x.id!==id);
+  if(USE_SB) sbDelete('reserve_areas',id);
+  saveLocal();renderSettings();
+}
+
+// ============ RENDER FUNCTIONS ============
+function getClinic(id){ return DATA.clinics.find(c=>c.id===id)||{}; }
+function getTreatment(id){ return DATA.treatments.find(t=>t.id===id)||{}; }
+function getSource(id){ return DATA.sources.find(s=>s.id===id)||{}; }
+function getArea(id){ return DATA.areas.find(a=>a.id===id)||{}; }
+
+function fmtDate(d){
+  if(!d) return '';
+  const dt=new Date(d+'T00:00:00');
+  const dow=['日','月','火','水','木','金','土'][dt.getDay()];
+  return `${dt.getMonth()+1}/${dt.getDate()} (${dow})`;
+}
+function timeAgo(ts){
+  if(!ts) return '';
+  const diff=Date.now()-new Date(ts).getTime();
+  const min=Math.floor(diff/60000);
+  if(min<1) return 'たった今';
+  if(min<60) return min+'分前';
+  const hr=Math.floor(min/60);
+  if(hr<24) return hr+'時間前';
+  const dy=Math.floor(hr/24);
+  return dy+'日前';
+}
+function statusBadge(s){
+  const m={reserved:['予約済み','badge-reserved'],visited:['来院済み','badge-visited'],cancelled:['キャンセル','badge-cancelled']};
+  const v=m[s]||m.reserved;
+  return `<span class="badge ${v[1]}">${v[0]}</span>`;
+}
+
+function renderDashboard(){
+  const res=DATA.reservations;
+  const todayStr=today();
+  const [wkStart,wkEnd]=thisWeekRange();
+  const todayRes=res.filter(r=>r.date===todayStr);
+  const weekRes=res.filter(r=>r.date>=wkStart&&r.date<=wkEnd);
+  const visited=todayRes.filter(r=>r.status==='visited').length;
+  const uniqueAreas=new Set(DATA.clinics.map(c=>c.area_id)).size;
+
+  document.getElementById('statsGrid').innerHTML=`
+    <div class="stat-card"><div class="label"><svg viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="2" width="16" height="16"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>今日の予約</div><div class="value">${todayRes.length}</div></div>
+    <div class="stat-card"><div class="label"><svg viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="2" width="16" height="16"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>今週の予約</div><div class="value">${weekRes.length}</div></div>
+    <div class="stat-card"><div class="label"><svg viewBox="0 0 24 24" fill="none" stroke="var(--warning)" stroke-width="2" width="16" height="16"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>総予約数</div><div class="value">${res.length}</div></div>
+    <div class="stat-card"><div class="label"><svg viewBox="0 0 24 24" fill="none" stroke="var(--success)" stroke-width="2" width="16" height="16"><path d="M16 21v-2a4 4 0 00-4-4H5a4 4 0 00-4-4v2"/><circle cx="8.5" cy="7" r="4"/></svg>登録状況</div><div class="value" style="font-size:18px;"><span style="color:var(--success);">◉</span> ${uniqueAreas} エリア&nbsp;&nbsp;<span style="color:var(--primary);">◉</span> ${DATA.clinics.length} 院</div></div>
+  `;
+
+  // Tags
+  const treatCount={}, clinicCount={};
+  res.forEach(r=>{
+    if(r.treatment_id){treatCount[r.treatment_id]=(treatCount[r.treatment_id]||0)+1;}
+    if(r.clinic_id){clinicCount[r.clinic_id]=(clinicCount[r.clinic_id]||0)+1;}
+  });
+  const topTreats=Object.entries(treatCount).sort((a,b)=>b[1]-a[1]).slice(0,3);
+  const topClinics=Object.entries(clinicCount).sort((a,b)=>b[1]-a[1]).slice(0,3);
+  let tagHtml=`<span class="tag"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/></svg>本日来院 ${visited} 件</span>`;
+  if(topTreats.length) tagHtml+=`<span class="tag" style="margin-left:8px;">🏷 人気施術</span>`+topTreats.map(([id,c])=>`<span class="tag">${(getTreatment(id).name||'').slice(0,12)}… (${c})</span>`).join('');
+  if(topClinics.length) tagHtml+=`<span class="tag" style="margin-left:8px;">🏥 人気院</span>`+topClinics.map(([id,c])=>`<span class="tag">${(getClinic(id).short_name||getClinic(id).name||'').slice(0,8)}… (${c})</span>`).join('');
+  document.getElementById('tagRow').innerHTML=tagHtml;
+
+  // Recent list
+  const recent=res.slice(0,10);
+  document.getElementById('recentList').innerHTML = recent.length ?
+    recent.map((r,i)=>{
+      const cl=getClinic(r.clinic_id);
+      const tr=getTreatment(r.treatment_id);
+      return `<div class="res-item">
+        <div class="res-num">${i+1}</div>
+        <div class="res-info">
+          <div class="res-name">${r.patient_name}</div>
+          <div class="res-meta"><span>🏥 ${cl.short_name||cl.name||'--'}</span><span>🏷 ${(tr.name||'').slice(0,20)}</span></div>
+        </div>
+        <div class="res-date"><div class="d">${fmtDate(r.date)}</div><div class="t">${r.time||''}</div><div class="ago">${timeAgo(r.created_at)}</div></div>
+      </div>`;
+    }).join('') : '<div class="empty"><p>予約がありません</p></div>';
+
+  // Traffic panel
+  const withSource=res.filter(r=>r.source_id);
+  const pct=res.length?Math.round(withSource.length/res.length*100):0;
+  document.getElementById('measurePct').textContent=pct+'%';
+  document.getElementById('measureFill').style.width=pct+'%';
+  document.getElementById('measureSub1').textContent=withSource.length+'件 計測済';
+  document.getElementById('measureSub2').textContent=res.length+'件 総数';
+
+  const srcCount={};
+  withSource.forEach(r=>{srcCount[r.source_id]=(srcCount[r.source_id]||0)+1;});
+  const topSrc=Object.entries(srcCount).sort((a,b)=>b[1]-a[1]).slice(0,5);
+  document.getElementById('topSources').innerHTML=topSrc.map(([id,c],i)=>{
+    const s=getSource(id);
+    const pctS=withSource.length?Math.round(c/withSource.length*100):0;
+    return `<div class="source-item"><div class="source-rank">${i+1}</div><div class="source-name">${s.name||'--'}</div><div class="source-count">${c}</div><div class="source-pct">${pctS}%</div></div>`;
+  }).join('')||'<div style="padding:12px;color:var(--ink3);font-size:13px;">データなし</div>';
+}
+
+function renderReservations(){
+  const q=(document.getElementById('resSearch').value||'').toLowerCase();
+  const fc=document.getElementById('resFilterClinic').value;
+  const fs=document.getElementById('resFilterStatus').value;
+  const fd=document.getElementById('resFilterDate').value;
+  // populate clinic filter
+  const csel=document.getElementById('resFilterClinic');
+  if(csel.options.length<=1){
+    DATA.clinics.forEach(c=>{const o=document.createElement('option');o.value=c.id;o.textContent=c.short_name||c.name;csel.appendChild(o);});
+  }
+  let list=DATA.reservations.filter(r=>{
+    if(q&&!r.patient_name.toLowerCase().includes(q)) return false;
+    if(fc&&r.clinic_id!==fc) return false;
+    if(fs&&r.status!==fs) return false;
+    if(fd&&r.date!==fd) return false;
+    return true;
+  });
+  const body=document.getElementById('resBody');
+  const empty=document.getElementById('resEmpty');
+  if(!list.length){ body.innerHTML=''; empty.style.display=''; return; }
+  empty.style.display='none';
+  body.innerHTML=list.map((r,i)=>{
+    const cl=getClinic(r.clinic_id);
+    const tr=getTreatment(r.treatment_id);
+    const src=getSource(r.source_id);
+    return `<tr>
+      <td class="num">${i+1}</td>
+      <td><strong>${r.patient_name}</strong><br><span style="font-size:11px;color:var(--ink3)">${r.patient_phone||''}</span></td>
+      <td><span style="color:${cl.color||'var(--ink)'};font-weight:600;">${cl.short_name||cl.name||'--'}</span></td>
+      <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;">${tr.name||'--'}</td>
+      <td style="white-space:nowrap;">${fmtDate(r.date)} ${r.time||''}</td>
+      <td>${src.name||'--'}</td>
+      <td>${statusBadge(r.status)}</td>
+      <td style="white-space:nowrap;">
+        <button class="btn btn-sm btn-outline" onclick="showResModal('${r.id}')">編集</button>
+        ${r.status==='reserved'?`<button class="btn btn-sm btn-success" onclick="changeStatus('${r.id}','visited')">来院</button>`:''}
+        <button class="btn btn-sm btn-danger" onclick="deleteReservation('${r.id}')" style="padding:5px 8px;">✕</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function renderClinics(){
+  const grouped={};
+  DATA.clinics.forEach(c=>{
+    const a=getArea(c.area_id);
+    const aname=a.name||'未分類';
+    if(!grouped[aname]) grouped[aname]=[];
+    grouped[aname].push(c);
+  });
+  document.getElementById('clinicList').innerHTML=Object.entries(grouped).map(([area,clinics])=>`
+    <h3 style="font-size:16px;font-weight:700;margin:0 0 12px;color:var(--ink2);">${area}エリア</h3>
+    <div class="clinic-grid" style="margin-bottom:24px;">
+      ${clinics.map(c=>`<div class="clinic-card">
+        <div class="clinic-dot" style="background:${c.color||'#999'}"></div>
+        <div style="flex:1;">
+          <h4>${c.name}</h4>
+          <div class="area">${c.short_name||''} / ${c.code}</div>
+          <div class="actions">
+            <button class="btn btn-sm btn-outline" onclick="showClinicModal('${c.id}')">編集</button>
+            <button class="btn btn-sm btn-danger" onclick="deleteClinic('${c.id}')">削除</button>
+          </div>
+        </div>
+      </div>`).join('')}
+    </div>
+  `).join('');
+}
+
+function renderTreatments(){
+  const cats={};
+  DATA.treatments.forEach(t=>{
+    const c=t.category||'その他';
+    if(!cats[c]) cats[c]=[];
+    cats[c].push(t);
+  });
+  const resCount={};
+  DATA.reservations.forEach(r=>{if(r.treatment_id) resCount[r.treatment_id]=(resCount[r.treatment_id]||0)+1;});
+  document.getElementById('treatList').innerHTML=Object.entries(cats).map(([cat,treats])=>`
+    <div class="card" style="margin-bottom:16px;">
+      <div class="card-header"><h3>${cat}</h3></div>
+      <div class="card-body" style="padding:8px 20px;">
+        ${treats.map(t=>`<div class="treat-item">
+          <div><strong>${t.name}</strong><span style="margin-left:8px;font-size:12px;color:var(--ink3);">${resCount[t.id]||0}件</span></div>
+          <div style="display:flex;gap:6px;">
+            <button class="btn btn-sm btn-outline" onclick="showTreatModal('${t.id}')">編集</button>
+            <button class="btn btn-sm btn-danger" onclick="deleteTreatment('${t.id}')">削除</button>
+          </div>
+        </div>`).join('')}
+      </div>
+    </div>
+  `).join('');
+}
+
+function renderEmails(){
+  const q=(document.getElementById('emailSearch').value||'').toLowerCase();
+  const fc=document.getElementById('emailFilterClinic').value;
+  const esel=document.getElementById('emailFilterClinic');
+  if(esel.options.length<=1){DATA.clinics.forEach(c=>{const o=document.createElement('option');o.value=c.id;o.textContent=c.short_name||c.name;esel.appendChild(o);});}
+  const withEmail=DATA.reservations.filter(r=>r.patient_email);
+  let list=withEmail.filter(r=>{
+    if(q&&!r.patient_name.toLowerCase().includes(q)&&!r.patient_email.toLowerCase().includes(q)) return false;
+    if(fc&&r.clinic_id!==fc) return false;
+    return true;
+  });
+  // dedupe by email
+  const seen=new Set(); list=list.filter(r=>{if(seen.has(r.patient_email))return false;seen.add(r.patient_email);return true;});
+  const el=document.getElementById('emailList');
+  const empty=document.getElementById('emailEmpty');
+  if(!list.length){el.innerHTML='';empty.style.display='';return;}
+  empty.style.display='none';
+  el.innerHTML=list.map(r=>{
+    const cl=getClinic(r.clinic_id);
+    return `<div class="email-item">
+      <div class="name">${r.patient_name}</div>
+      <div class="addr">${r.patient_email}</div>
+      <div class="clinic">${cl.short_name||cl.name||''}</div>
+      <button class="copy-btn" onclick="copyEmail(this,'${r.patient_email}')">コピー</button>
+    </div>`;
+  }).join('');
+}
+function copyEmail(btn,email){
+  navigator.clipboard.writeText(email);
+  btn.textContent='✓';btn.classList.add('copied');
+  setTimeout(()=>{btn.textContent='コピー';btn.classList.remove('copied');},1500);
+}
+function copyAllEmails(){
+  const emails=DATA.reservations.filter(r=>r.patient_email).map(r=>r.patient_email);
+  const unique=[...new Set(emails)];
+  navigator.clipboard.writeText(unique.join(', '));
+  alert(unique.length+'件のメールアドレスをコピーしました');
+}
+
+function renderSources(){
+  const srcCount={};
+  DATA.reservations.forEach(r=>{if(r.source_id) srcCount[r.source_id]=(srcCount[r.source_id]||0)+1;});
+  const total=DATA.reservations.length;
+  document.getElementById('sourceBody').innerHTML=DATA.sources.map((s,i)=>{
+    const c=srcCount[s.id]||0;
+    const pct=total?Math.round(c/total*100):0;
+    return `<tr>
+      <td class="num">${i+1}</td><td><strong>${s.name}</strong></td><td style="color:var(--ink3);">${s.code||'--'}</td>
+      <td class="num">${c}</td><td class="num">${pct}%</td>
+      <td><button class="btn btn-sm btn-outline" onclick="showSourceModal('${s.id}')">編集</button> <button class="btn btn-sm btn-danger" onclick="deleteSource('${s.id}')">削除</button></td>
+    </tr>`;
+  }).join('');
+}
+
+function renderSettings(){
+  document.getElementById('areaBody').innerHTML=DATA.areas.map(a=>{
+    const cnt=DATA.clinics.filter(c=>c.area_id===a.id).length;
+    return `<tr><td><strong>${a.name}</strong></td><td class="num">${cnt}</td><td><button class="btn btn-sm btn-danger" onclick="deleteArea('${a.id}')">削除</button></td></tr>`;
+  }).join('');
+}
+
+function renderAll(){
+  renderDashboard();
+  renderReservations();
+  renderClinics();
+  renderTreatments();
+  renderSources();
+  renderSettings();
+}
+
+// ============ SAMPLE DATA ============
+function loadSampleData(){
+  if(DATA.reservations.length>0&&!confirm('既存データに追加します。よろしいですか？')) return;
+  const names=['鈴木雄貴','入江和茂','石川　くるみ','入江翔平','大久保啓','山田花子','佐藤美咲','田中健太','高橋優子','渡辺拓海',
+    '伊藤さくら','中村大輔','小林真由','加藤隆','吉田恵','松本翼','井上美月','木村太一','林あかり','清水健'];
+  const dates=['2025-04-08','2025-04-14','2025-04-17','2025-04-21','2025-04-22','2025-04-23','2025-04-24','2025-04-25','2025-04-28','2025-04-30'];
+  const times=['09:00','09:30','10:00','10:30','11:00','13:00','14:00','14:30','15:00','15:30','16:00','16:30','17:00','17:30'];
+  const statuses=['reserved','reserved','reserved','visited','visited','visited','visited','cancelled'];
+  for(let i=0;i<20;i++){
+    const cIdx=Math.floor(Math.random()*DATA.clinics.length);
+    const tIdx=Math.floor(Math.random()*DATA.treatments.length);
+    const sIdx=Math.random()>0.1?Math.floor(Math.random()*DATA.sources.length):null;
+    DATA.reservations.push({
+      id:uid(),
+      patient_name:names[i%names.length],
+      patient_phone:'090-'+String(Math.floor(Math.random()*9000+1000))+'-'+String(Math.floor(Math.random()*9000+1000)),
+      patient_email:Math.random()>0.3?`patient${i}@example.com`:'',
+      clinic_id:DATA.clinics[cIdx].id,
+      treatment_id:DATA.treatments[tIdx].id,
+      source_id:sIdx!==null?DATA.sources[sIdx].id:null,
+      date:dates[Math.floor(Math.random()*dates.length)],
+      time:times[Math.floor(Math.random()*times.length)],
+      status:statuses[Math.floor(Math.random()*statuses.length)],
+      notes:'',
+      created_at:new Date(Date.now()-Math.floor(Math.random()*86400000*7)).toISOString(),
+    });
+  }
+  saveLocal();
+  renderAll();
+  alert('サンプルデータ20件を追加しました');
+}
+
+function exportCSV(){
+  if(!DATA.reservations.length){alert('エクスポートするデータがありません');return;}
+  let csv='患者名,電話番号,メール,クリニック,施術,日付,時間,流入経路,ステータス\n';
+  DATA.reservations.forEach(r=>{
+    csv+=[r.patient_name,r.patient_phone||'',r.patient_email||'',
+      (getClinic(r.clinic_id).name||''),(getTreatment(r.treatment_id).name||''),
+      r.date,r.time,(getSource(r.source_id).name||''),r.status].map(v=>'"'+String(v).replace(/"/g,'""')+'"').join(',')+'\n';
+  });
+  const blob=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8;'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='reservations_'+today()+'.csv';a.click();
+}
+
+function logout(){ if(confirm('ログアウトしますか？')) location.reload(); }
+
+// ============ INIT ============
+initData();
+</script>
+</body>
+</html>
